@@ -1,4 +1,5 @@
 import os
+from dependencies.pyemu.pyemu import pst
 import pyemu
 import platform
 import shutil
@@ -116,3 +117,54 @@ def post_model_outputs(template_ws="."):
     np.savetxt(os.path.join(template_ws,"riv.0.txt"),df.iloc[0].values)
     print(f"saving riv obs to: {os.path.join(template_ws,'riv.0.txt')}")
     return 
+
+
+def choose_truth(ws='master_prior_mc'):
+    pst = pyemu.Pst(os.path.join(ws,'pest.pst'))
+    oe = pst.ies.obsen.copy()
+    noise = pst.ies.noise
+    obs = pst.observation_data
+
+
+    _obs = obs.loc[obs.oname=='heads0'].copy()
+    _obs['i'] = _obs['i'].astype(int)
+    _obs.sort_values(by=['i'],inplace=True)
+    calib_obs = get_obs_cellids(ws)
+    nzobsnmes = _obs.loc[_obs['i'].isin(calib_obs.icpl.values)].obsnme.tolist()
+    assert len(nzobsnmes) >0
+
+    obs.loc[nzobsnmes,'weight'] = 1.0 / 0.1
+    obs.loc[nzobsnmes,'standard_deviation'] = 0.1
+
+    obs.loc[obs.oname=='riv', 'weight'] = 1.0 / 0.0001
+    obs.loc[obs.oname=='riv', 'standard_deviation'] = 0.0001
+
+
+    obsnmes = obs.loc[obs.oname=="temp"].obsnme.tolist()
+
+
+
+
+    # find columns in data[obsnmes] where 50% of the values are below 16.01
+    cols = oe[obsnmes].columns[(oe[obsnmes] <= 16.005).mean() > 0.5]
+
+    # find col in cols with highest std
+    stds = oe[cols].std()
+    cols = stds.sort_values(ascending=False).index.tolist()
+
+
+    ends = pyemu.EnDS(pst=pst,
+                    sim_ensemble=pyemu.ObservationEnsemble(pst,oe),
+                    noise_ensemble=pyemu.ObservationEnsemble(pst,noise),
+                    predictions=cols, #top 10 cols with highest std
+                    verbose=False)
+    
+    obslist_dict = {'nzobs': pst.nnz_obs_names}
+    mean_dfs,dfstd,dfpercen = ends.get_posterior_prediction_moments(obslist_dict=obslist_dict.copy(),
+                                                                    #sim_ensemble=oe_pr, #if None, uses the sim_ensemble originally passed to ends
+                                                                    include_first_moment=False)
+    ilist = dfstd.loc['posterior'].sort_values(ascending=False).index.tolist()[:10]
+
+    target_col = dfpercen.loc['posterior',ilist].sort_values(ascending=False).index.values[0]
+    truth_index = oe[target_col].sort_values().index.values[-15]
+    return truth_index, target_col
